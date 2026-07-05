@@ -51,6 +51,11 @@ on:
         required: false
         type: string
         default: "build/*.dmg"
+      releases-repo:
+        description: "Repo to publish GitHub Releases to (e.g. Cortexa-LLC/ADSync-releases). Defaults to the calling repo."
+        required: false
+        type: string
+        default: ""
       retention-days:
         description: "Days to retain non-release artifacts"
         required: false
@@ -127,6 +132,7 @@ jobs:
           if-no-files-found: error
 
       # ── Tag release: create GitHub Release with DMG attached ─────────────
+      # Publishes to releases-repo if set, otherwise to the calling repo.
       - name: Create GitHub Release
         if: steps.meta.outputs.is_tag == 'true'
         env:
@@ -134,9 +140,10 @@ jobs:
           TAG: ${{ steps.meta.outputs.tag }}
           DMG: ${{ steps.dmg.outputs.path }}
           APP: ${{ inputs.app-name }}
+          TARGET_REPO: ${{ inputs.releases-repo != '' && inputs.releases-repo || github.repository }}
         run: |
           gh release create "$TAG" "$DMG" \
-            --repo "$GITHUB_REPOSITORY" \
+            --repo "$TARGET_REPO" \
             --title "$APP $TAG" \
             --generate-notes \
             --verify-tag
