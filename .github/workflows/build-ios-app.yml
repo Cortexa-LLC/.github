@@ -1,0 +1,182 @@
+# Reusable workflow — build and upload a development-signed iOS IPA.
+#
+# Caller handles change detection and the fan-in gate job; this workflow
+# just archives, exports, and uploads the artifact.
+#
+# Requirements on the self-hosted runner (harvana-m2max):
+#   - Xcode + command-line tools installed
+#   - Apple Developer account configured (automatic development signing)
+#   - git-lfs installed
+
+name: Build iOS App
+
+on:
+  workflow_call:
+    inputs:
+      app-name:
+        description: "App name used for artifact labelling (e.g. Harvana)"
+        required: true
+        type: string
+      scheme:
+        description: "Xcode scheme to archive"
+        required: true
+        type: string
+      project-path:
+        description: "Repo-relative path to the directory containing the .xcodeproj"
+        required: false
+        type: string
+        default: "."
+      project-name:
+        description: ".xcodeproj filename without the .xcodeproj extension"
+        required: true
+        type: string
+      configuration:
+        description: "Build configuration (Debug or Release)"
+        required: false
+        type: string
+        default: "Debug"
+      export-method:
+        description: "IPA export method: development | ad-hoc | app-store"
+        required: false
+        type: string
+        default: "development"
+      package-resolved-path:
+        description: "Repo-relative path to Package.resolved for SPM cache key (leave empty to skip caching)"
+        required: false
+        type: string
+        default: ""
+      retention-days:
+        description: "Days to retain the uploaded IPA artifact"
+        required: false
+        type: number
+        default: 14
+    outputs:
+      short-sha:
+        description: "Short git SHA used in the artifact name"
+        value: ${{ jobs.build.outputs.short_sha }}
+
+jobs:
+  build:
+    name: Build ${{ inputs.app-name }} IPA
+    runs-on: [self-hosted, macos, arm64, harvana-m2max]
+    timeout-minutes: 30
+
+    outputs:
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+
+    steps:
+      - name: Add Homebrew to PATH
+        run: echo "/opt/homebrew/bin" >> $GITHUB_PATH
+
+      - name: Configure git-lfs
+        run: git lfs install
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Cache SPM package sources
+        if: inputs.package-resolved-path != ''
+        uses: actions/cache@v5
+        with:
+          path: |
+            ${{ inputs.project-path }}/.build/checkouts
+            ${{ inputs.project-path }}/.build/repositories
+            ${{ inputs.project-path }}/.build/artifacts
+          key: spm-src-${{ runner.os }}-${{ hashFiles(inputs.package-resolved-path) }}
+          restore-keys: spm-src-${{ runner.os }}-
+
+      - name: Trust Swift macro plugins (CI headless)
+        run: defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
+
+      - name: Compute short SHA
+        id: meta
+        run: echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Resolve SPM dependencies
+        working-directory: ${{ inputs.project-path }}
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project ${{ inputs.project-name }}.xcodeproj \
+            -scheme   ${{ inputs.scheme }}
+
+      - name: Archive
+        id: archive
+        working-directory: ${{ inputs.project-path }}
+        env:
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+          APP:       ${{ inputs.app-name }}
+          CONFIG:    ${{ inputs.configuration }}
+        run: |
+          ARCHIVE_PATH="$RUNNER_TEMP/${APP}-${CONFIG}-${SHORT_SHA}.xcarchive"
+          TEAM_ID=$(xcodebuild \
+            -project ${{ inputs.project-name }}.xcodeproj \
+            -scheme   ${{ inputs.scheme }} \
+            -showBuildSettings 2>/dev/null \
+            | grep '^\s*DEVELOPMENT_TEAM\s*=' | head -1 \
+            | awk -F'= ' '{print $2}' | xargs)
+          echo "Using DEVELOPMENT_TEAM: ${TEAM_ID}"
+
+          if command -v xcpretty &>/dev/null; then FMT="| xcpretty"; else FMT=""; fi
+          set -o pipefail
+          eval xcodebuild archive \
+            -project ${{ inputs.project-name }}.xcodeproj \
+            -scheme   ${{ inputs.scheme }} \
+            -configuration "${CONFIG}" \
+            -destination  "'generic/platform=iOS'" \
+            -archivePath  "\"${ARCHIVE_PATH}\"" \
+            CODE_SIGN_IDENTITY="\"Apple Development\"" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM="${TEAM_ID}" \
+            $FMT
+
+          echo "archive_path=${ARCHIVE_PATH}" >> $GITHUB_OUTPUT
+
+      - name: Write ExportOptions.plist
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>${{ inputs.export-method }}</string>
+              <key>signingStyle</key>
+              <string>automatic</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Export IPA
+        id: export_ipa
+        env:
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+          APP:       ${{ inputs.app-name }}
+          CONFIG:    ${{ inputs.configuration }}
+        run: |
+          EXPORT_PATH="$RUNNER_TEMP/${APP}-${CONFIG}-${SHORT_SHA}"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/${APP}-${CONFIG}-${SHORT_SHA}.xcarchive" \
+            -exportPath  "${EXPORT_PATH}" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+          echo "export_path=${EXPORT_PATH}" >> $GITHUB_OUTPUT
+
+      - name: Upload IPA artifact
+        if: success() && steps.export_ipa.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.app-name }}-${{ inputs.configuration }}-${{ steps.meta.outputs.short_sha }}
+          path: ${{ runner.temp }}/${{ inputs.app-name }}-${{ inputs.configuration }}-${{ steps.meta.outputs.short_sha }}/*.ipa
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
+
+      # Fallback: keep the .xcarchive if IPA export fails so the build isn't a total loss.
+      - name: Upload xcarchive fallback
+        if: failure() && steps.archive.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.app-name }}-archive-${{ steps.meta.outputs.short_sha }}
+          path: ${{ runner.temp }}/${{ inputs.app-name }}-${{ inputs.configuration }}-*.xcarchive
+          retention-days: ${{ inputs.retention-days }}
