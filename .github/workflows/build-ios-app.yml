@@ -50,6 +50,11 @@ on:
         required: false
         type: number
         default: 14
+      runner:
+        description: "runs-on value as a JSON array string, e.g. '[\"self-hosted\",\"macos\",\"arm64\",\"harvana-m2max\"]'"
+        required: false
+        type: string
+        default: '["self-hosted", "macos", "arm64", "harvana-m2max"]'
     outputs:
       short-sha:
         description: "Short git SHA used in the artifact name"
@@ -58,7 +63,7 @@ on:
 jobs:
   build:
     name: Build ${{ inputs.app-name }} IPA
-    runs-on: [self-hosted, macos, arm64, harvana-m2max]
+    runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 30
 
     outputs:
