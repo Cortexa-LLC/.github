@@ -66,6 +66,21 @@ on:
         required: false
         type: string
         default: '["self-hosted", "macos", "arm64", "harvana-m2max"]'
+      signing-script:
+        description: "Repo-relative signing wrapper (Infisical → ephemeral keychain). When set, the build runs wrapped by it and no login-keychain identity is needed."
+        required: false
+        type: string
+        default: ""
+      infisical-project-id:
+        description: "Infisical workspace id holding the signing secrets (config, not a secret)"
+        required: false
+        type: string
+        default: ""
+      infisical-api:
+        description: "Infisical API base URL"
+        required: false
+        type: string
+        default: "https://infisical.cortexa.com"
 
 jobs:
   build:
@@ -101,13 +116,24 @@ jobs:
       - name: Build ${{ inputs.app-name }}
         id: build
         env:
-          NOTARIZE: ${{ steps.meta.outputs.is_tag == 'true' && inputs.notarytool-profile != '' }}
+          NOTARIZE: ${{ steps.meta.outputs.is_tag == 'true' && (inputs.signing-script != '' || inputs.notarytool-profile != '') }}
+          # Signing via Infisical (used when signing-script is set — no login-keychain
+          # identity or stored notarytool profile required).
+          INFISICAL_API: ${{ inputs.infisical-api }}
+          INFISICAL_PROJECT_ID: ${{ inputs.infisical-project-id }}
+          INFISICAL_CLIENT_ID: ${{ secrets.APPLE_SIGNING_INFISICAL_CLIENT_ID }}
+          INFISICAL_CLIENT_SECRET: ${{ secrets.APPLE_SIGNING_INFISICAL_CLIENT_SECRET }}
+          # Legacy fallback: identity in the login keychain + stored notarytool profile.
           KEYCHAIN_PROFILE: ${{ inputs.notarytool-profile }}
         run: |
-          if [[ "$NOTARIZE" == "true" ]]; then
-            bash "${{ inputs.build-script }}" --notarize
+          ARGS=""
+          [[ "$NOTARIZE" == "true" ]] && ARGS="--notarize"
+          if [[ -n "${{ inputs.signing-script }}" ]]; then
+            # signing-script fetches the Developer ID from Infisical into an ephemeral
+            # keychain, runs the build wrapped, then tears the keychain down.
+            python3 "${{ inputs.signing-script }}" run -- python3 "${{ inputs.build-script }}" $ARGS
           else
-            bash "${{ inputs.build-script }}"
+            bash "${{ inputs.build-script }}" $ARGS
           fi
 
       - name: Locate DMG
