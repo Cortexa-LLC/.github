@@ -128,6 +128,11 @@ jobs:
         run: |
           ARGS=""
           [[ "$NOTARIZE" == "true" ]] && ARGS="--notarize"
+          # On a tag, when signing-script owns publishing, also create the release +
+          # appcast (build script --publish). The built-in release step below is skipped then.
+          if [[ "${{ steps.meta.outputs.is_tag }}" == "true" && -n "${{ inputs.signing-script }}" ]]; then
+            ARGS="$ARGS --publish"
+          fi
           if [[ -n "${{ inputs.signing-script }}" ]]; then
             # signing-script fetches the Developer ID from Infisical into an ephemeral
             # keychain, runs the build wrapped, then tears the keychain down.
@@ -159,8 +164,10 @@ jobs:
 
       # ── Tag release: create GitHub Release with DMG attached ─────────────
       # Publishes to releases-repo if set, otherwise to the calling repo.
+      # Skipped when signing-script is set — the build script's --publish already
+      # created the release (and updated the Sparkle appcast).
       - name: Create GitHub Release
-        if: steps.meta.outputs.is_tag == 'true'
+        if: steps.meta.outputs.is_tag == 'true' && inputs.signing-script == ''
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.meta.outputs.tag }}
