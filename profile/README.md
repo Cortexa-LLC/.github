@@ -12,7 +12,7 @@ AI-native engineering R&D by [Bryan Woodruff](https://github.com/bawoodruff) —
 
 A modern, maintained toolchain family for classic platforms — because the fundamentals never go out of style:
 
+- **[xasm-plus-plus](https://github.com/Cortexa-LLC/xasm-plus-plus)** — production cross-assembler in modern C++20: single binary supporting 7 vintage CPU architectures (6502 family, 6809, Z80) and 5 classic syntax modes, 1,600+ tests, cross-platform CI with emulator boot validation — built end-to-end with ai-pack agent workflows
 - **[sourcerer](https://github.com/Cortexa-LLC/sourcerer)** — modular disassembler for 6502, 6809, and Z80 with pluggable output formatters
-- **[xasm-plus-plus](https://github.com/Cortexa-LLC/xasm-plus-plus)** — cross-assembler re-architected to an extensible C++ model
 - **[vasm-ext](https://github.com/Cortexa-LLC/vasm-ext)** — vasm extended with SCASM and Merlin syntax modules for Apple II/IIgs development
 - **[scmasm](https://github.com/Cortexa-LLC/scmasm)** — the classic S-C Macro Assembler, modernized
